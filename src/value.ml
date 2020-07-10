@@ -59,9 +59,9 @@ type t =
 
 and builtin_fn = interp -> t list -> (string, t) Hashtbl.t -> t
 
-and builtins = (string, builtin_fn, String.comparator_witness) Map.t
+and builtins = (string, builtin_fn, String.comparator_witness) Map.t (** ビルトイン関数を管理するMap *)
 
-and env =
+and env = (** 実行環境 *)
   { scope : (string, t) Hashtbl.t
   ; prev_env : env option
   ; local_variables : string Hash_set.t

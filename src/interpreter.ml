@@ -8,6 +8,7 @@ exception Continue
 
 type builtins = Value.builtins
 
+(** インタプリタの実行環境 *)
 module Env : sig
   type t = Value.env
 
@@ -21,12 +22,13 @@ module Env : sig
   val last_scope : t -> (string, Value.t) Hashtbl.t
 end = struct
   type t = Value.env =
-    { scope : (string, Value.t) Hashtbl.t
-    ; prev_env : t option
-    ; local_variables : string Hash_set.t
-    ; builtins : builtins
+    { scope : (string, Value.t) Hashtbl.t (* 現在のスコープで定義されている変数や関数とその中身を保持するテーブル *)
+    ; prev_env : t option                 (* 一つ前のブロック *)
+    ; local_variables : string Hash_set.t (* スコープからアクセス可能なローカル変数(名の集合 *)
+    ; builtins : builtins                 (* ビルトイン関数の集合 *)
     }
 
+  (** 空の環境を生成して返す *)
   let empty ?(builtins = Builtins.default) () =
     let scope = Value.Exception.exceptions |> Hashtbl.of_alist_exn (module String) in
     { scope
@@ -44,30 +46,35 @@ end = struct
     ; builtins = Map.empty (module String)
     }
 
+  (* 現在のスコープに name/value の値を追加する *)
   let set t ~name ~value = Hashtbl.set t.scope ~key:name ~data:value
 
+  (* 現在のスコープから name の値を削除する *)
   let remove t ~name =
     match Hashtbl.find_and_remove t.scope name with
     | None -> errorf "Variable %s is not defined" name
     | Some _ -> ()
 
+  (* 現在のスコープから name な値を探して value を返す *)
   let find_exn t ~name =
-    if Hash_set.mem t.local_variables name && not (Hashtbl.mem t.scope name)
+    if Hash_set.mem t.local_variables name && not (Hashtbl.mem t.scope name) (* local_variables か scope に登録されている名前か? *)
     then errorf "Variable %s accessed before being initialized" name ();
+    (* 登録されている名前ならアクセスできる scope を順に検索する *)
     let rec loop t =
       match Hashtbl.find t.scope name with
       | Some value -> value
       | None ->
         (match t.prev_env with
-        | Some t -> loop t
+        | Some t -> loop t  (* 外側スコープに探しに行く *)
         | None ->
-          (match Map.find t.builtins name with
+          (match Map.find t.builtins name with (* スコープを探しきったらビルトインネームスペースにあるか探す *)
           | Some value -> Val_builtin_fn value
           | None -> errorf "cannot find variable %s in scopes" name ()))
     in
     loop t
 end
 
+(** PythonのList操作を定義しているようだ *)
 let list_attrs queue ~attr =
   match attr with
   | "append" ->
@@ -127,6 +134,10 @@ let list_attrs queue ~attr =
   | attr -> errorf "'sort' object has no attribute '%s'" attr
 
 (* Very naive evaluation. *)
+(**
+   ASTを直接実行する. 初期のRubyのような素朴なスタイル
+   中間コード一切なし -> crawber の実装が参考になるかも
+ *)
 let rec eval_stmt env stmt =
   match stmt.value with
   | Expr { value } -> ignore (eval_expr env value : Value.t)

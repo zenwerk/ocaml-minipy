@@ -11,16 +11,24 @@ exception ParseError of string
 open Ast
 let errorf fmt = Printf.ksprintf (fun s -> raise (ParseError s)) fmt
 
+(* 既存のIf条件の先頭に新たに test, body をいい感じにガッチャンコして返す *)
 let combine_if loc ~test ~body ~elif ~orelse =
   let orelse =
-    List.rev elif
-    |> List.fold ~init:orelse ~f:(fun orelse (test, body) ->
+    List.rev elif (* elif list を反転 | ~~後からパースされたものがけつにくるはずなので反転して定義された順に elif文を取り出しているのだろう~~ *)
+    (* 初期値が引数で渡されてきた orelse, それに elif の (test, body) list を畳み込む
+       畳み込む結果は [If {elif-test; elif-body; acc}]
+       よって  elif が逆順に orelseに畳み込まれていき, initのorelseが最後になるように畳み込まれていく
+       得られる結果は -> [If {先頭のelif; orelse=If{2番めのelif; orelse=If{3番目のelif... orelse=initのorelse}}}] のような構造 *)
+    |> List.fold ~init:orelse ~f:(fun orelse (test, body) -> (* orelse が acc *)
         [ { loc; value = If { test; body; orelse } } ])
   in
+  (* 畳み込んだ結果を orelse に配置し引数の test, body を先頭条件にする If-Ast を返す *)
   { loc; value = If { test; body; orelse } }
 
+(* 空のパラメータを表す *)
 let empty_args = { args = []; vararg = None; kwonlyargs = []; kwarg = None }
 
+(* 複数の引数レコードを一つのレコードにマージして返す *)
 let merge_parameters parameters =
   let a =
     List.fold parameters
@@ -28,27 +36,30 @@ let merge_parameters parameters =
       ~f:(fun acc arg ->
         match arg with
         | `arg id ->
+            (* **kwargs,*argsの後に通常の引数は書けない *)
             if Option.is_some acc.vararg
             then errorf "positional argument %s after vararg" id;
             if Option.is_some acc.kwarg
             then errorf "positional argument %s after kwarg" id;
             { acc with args = id :: acc.args }
         | `kwonlyarg (id, e) ->
+            (* a=b は **kwargs の後に書けない *)
             if Option.is_some acc.kwarg
             then errorf "keyword argument %s after kwarg" id;
             { acc with kwonlyargs  = (id, e) :: acc.kwonlyargs }
         | `vararg id ->
             if Option.is_some acc.vararg
-            then errorf "duplicate vararg" id;
+            then errorf "duplicate vararg" id; (* *args は複数定義できない *)
             if Option.is_some acc.kwarg
-            then errorf "vararg %s after kwarg" id;
+            then errorf "vararg %s after kwarg" id; (* **kwargs の後に *args は書けない *)
             { acc with vararg = Some id }
         | `kwarg id ->
             if Option.is_some acc.kwarg
-            then errorf "duplicate kwarg" id;
+            then errorf "duplicate kwarg" id; (* **kwargs は複数定義できない *)
             { acc with kwarg = Some id }
       )
   in
+  (* 引数名を一つのリストにまとめる *)
   let all_ids =
     a.args @ Option.to_list a.vararg @ Option.to_list a.kwarg @ List.map a.kwonlyargs ~f:fst
   in
@@ -62,7 +73,7 @@ let merge_args args =
       match arg with
       | `Arg arg ->
           if not (List.is_empty acc_kw)
-          then errorf "positional argument follows keyword argument";
+          then errorf "positional argument follows keyword argument"; (* キーワード引数の後に位置引数はおけない *)
           arg :: acc_a, acc_kw
       | `Keyword kwarg -> acc_a, kwarg :: acc_kw)
   in
@@ -131,8 +142,9 @@ let continue loc = { loc; value = Continue }
 %start mod_
 %%
 
+// スタート
 mod_:
-  | l=newline_or_stmt* ENDMARKER { List.concat l }
+  | l=newline_or_stmt* ENDMARKER { List.concat l } // stmt list list を list に結合(concat)
 ;
 
 newline_or_stmt:
@@ -145,14 +157,16 @@ stmt:
   | s=compound_stmt { [ s ] }
 ;
 
+// スモール文\n | スモール文; simple_stmt_or_empty
 simple_stmt:
-  | s=small_stmt NEWLINE { [ s ] }
-  | s=small_stmt SEMICOLON l=simple_stmt_or_empty { s :: l }
+  | s=small_stmt NEWLINE { [ s ] } // 文\n
+  | s=small_stmt SEMICOLON l=simple_stmt_or_empty { s :: l } // 文; 文;*
 ;
 
-simple_stmt_or_empty:
+// \n | スモール文\n | スモール文; rec
+simple_stmt_or_empty: // shift/reduce回避のため改行付きかどうかで分けている？
   | NEWLINE { [] }
-  | s=small_stmt NEWLINE { [s] }
+  | s=small_stmt NEWLINE { [ s ] }
   | s=small_stmt SEMICOLON l=simple_stmt_or_empty { s :: l }
 ;
 
@@ -193,11 +207,13 @@ flow_stmt:
   | RAISE exc=test? FROM cause=test { raise_ $loc ~exc ~cause:(Some cause) }
 ;
 
+(* インデントでのひとかたまりを表すのはこの部分のようだ(仮) *)
 suite:
   | s=simple_stmt { s }
   | NEWLINE INDENT l=stmt+ DEDENT { List.concat l }
 ;
 
+// 複合文
 compound_stmt:
   | IF test=test COLON body=suite elif=elif* orelse=orelse { combine_if $loc ~test ~body ~elif ~orelse }
   | WHILE test=test COLON body=suite orelse=orelse { while_ $loc ~test ~body ~orelse }
@@ -231,6 +247,7 @@ class_parameters:
     | LPAREN args=parameters RPAREN { args }
 ;
 
+// カンマ区切りパラメーター
 parameters:
   | l=separated_list(COMMA, parameter) { merge_parameters l }
 ;
@@ -251,6 +268,8 @@ assert_message:
   | COMMA e=test { Some(e) }
 ;
 
+// test | test, testlist_or_empty
+// A or A,A* のようなパターンは後続の A* の任意追加部分の生成規則を分けるとコンフリクトを回避できるようだ
 testlist:
   | e=test { e }
   | e=test COMMA l=testlist_or_empty { tuple $loc (Array.of_list (e :: l)) }
@@ -273,12 +292,17 @@ exprlist_or_empty:
   | e=expr COMMA l=exprlist_or_empty { e :: l }
 ;
 
+// test は条件式の生成規則だが、一番したまで行くと単一の expr だけになるパターンがある
+// こういう生成規則のほうがよいのかな…
 test:
-  | e=or_test { e }
+  | e=or_test { e } // このパターンで一切条件式が出ないまま最後まで行くと単一 expr だけが残る -> 式表現
   | body=or_test IF test=or_test ELSE orelse=test { ifexp $loc ~body ~test ~orelse }
   | LAMBDA args=parameters COLON body=test { lambda $loc ~args ~body }
 ;
 
+
+// あとから定義されているものほど優先度が高い -> not, and, or の順に評価される
+// A or B ..
 or_test:
   | e=separated_nonempty_list(OPOR, and_test) {
     match e with
@@ -286,7 +310,7 @@ or_test:
     | values -> boolop $loc ~op:Or ~values
 }
 ;
-
+// A and B
 and_test:
   | e=separated_nonempty_list(OPAND, not_test) {
     match e with
@@ -294,15 +318,15 @@ and_test:
     | values -> boolop $loc ~op:And ~values
 }
 ;
-
-
+// not A
 not_test:
   | OPNOT operand=not_test { unaryop $loc ~op:Not ~operand }
   | e=comparison { e }
 ;
 
+// 条件式
 comparison:
-  | e=expr { e }
+  | e=expr { e } // 式
   | l=expr o=comp_op c=comparison {
     let ops_and_exprs =
       match c with
@@ -394,18 +418,19 @@ atom_expr:
   | value=atom_expr LBRACK slice=testlist RBRACK { subscript $loc ~value ~slice }
 ;
 
+// リテラル式
 atom:
-  | LPAREN e=testlist RPAREN { e }
-  | LBRACK l=separated_list(COMMA, expr) RBRACK { list $loc (Array.of_list l) }
+  | LPAREN e=testlist RPAREN { e } // タプル
+  | LBRACK l=separated_list(COMMA, expr) RBRACK { list $loc (Array.of_list l) } // リスト
   | LBRACK elt=expr FOR target=exprlist IN iter=or_test ifs=ifs f=fors RBRACK
-    { listcomp $loc ~elt ~generators:({ target; iter; ifs } :: f) }
-  | LBRACE key_values=separated_list(COMMA, key_value) RBRACE { dict $loc ~key_values }
-  | IDENTIFIER { name $loc $1 }
-  | STRING { str $loc $1 }
-  | INTEGER { num $loc (Z.of_string $1) }
-  | FLOAT { float $loc (float_of_string $1) }
-  | BOOL { bool $loc $1 }
-  | NONE { none $loc}
+    { listcomp $loc ~elt ~generators:({ target; iter; ifs } :: f) } // リスト内包表記
+  | LBRACE key_values=separated_list(COMMA, key_value) RBRACE { dict $loc ~key_values } // 辞書
+  | IDENTIFIER { name $loc $1 }               // 変数
+  | STRING { str $loc $1 }                    // 文字列
+  | INTEGER { num $loc (Z.of_string $1) }     // int
+  | FLOAT { float $loc (float_of_string $1) } // float
+  | BOOL { bool $loc $1 }                     // bool
+  | NONE { none $loc}                         // None
 ;
 
 argument:

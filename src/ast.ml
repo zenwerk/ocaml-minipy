@@ -46,6 +46,7 @@ type cmpop =
   | NotIn
 [@@deriving sexp]
 
+(* 型に別名を付けている? *)
 type position = Lexing.position =
   { pos_fname : string
   ; pos_lnum : int
@@ -185,10 +186,10 @@ and comprehension =
   }
 
 and arguments =
-  { args : string list
-  ; vararg : string option
-  ; kwonlyargs : (string * expr with_loc) list
-  ; kwarg : string option
+  { args : string list (* 通常の引数 *)
+  ; vararg : string option (* *args *)
+  ; kwonlyargs : (string * expr with_loc) list (* foo=bar *)
+  ; kwarg : string option (* **kwargs *)
   }
 
 and excepthandler =

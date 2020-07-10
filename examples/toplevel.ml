@@ -37,8 +37,10 @@ let toplevel () =
 
 let () =
   let argv = Sys.get_argv () in
+  (* 引数がないときは REPL を起動 *)
   if Array.length argv <= 1
   then toplevel ()
+  (* ファイル名が指定されたときはこっち *)
   else
     protect ~f:(fun () ->
         match Parse.parse_file argv.(1) with

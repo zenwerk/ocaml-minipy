@@ -14,6 +14,7 @@ let ok_exn = function
   | Error { Error.message; context = None } -> failwith message
   | Error { message; context = Some context } -> failwith (message ^ "\n" ^ context)
 
+(** Parser.token を string へ *)
 let token_to_string (token : Parser.token) =
   match token with
   | WHILE -> "WHILE"
@@ -90,6 +91,7 @@ let token_to_string (token : Parser.token) =
   | OPBOR -> "OPBOR"
   | OPBAND -> "OPBAND"
 
+(** filename="unk" で lexbuf を受け取り Parser.token list を返す *)
 let tokens ?(filename = "unk") lexbuf =
   lexbuf.lex_curr_p <- { lexbuf.lex_curr_p with pos_fname = filename };
   let env = Lexer.Env.create () in
@@ -102,15 +104,18 @@ let tokens ?(filename = "unk") lexbuf =
   in
   loop []
 
+(** 文字列を直接受け取って Parse.token list にする *)
 let tokens_string str =
   let lexbuf = Lexing.from_string str ~with_positions:true in
   tokens lexbuf
 
+(** ファイル名を受け取って Paser.token list にする *)
 let tokens_file filename =
   Stdio.In_channel.with_file filename ~f:(fun in_channel ->
       let lexbuf = Lexing.from_channel in_channel in
       tokens lexbuf ~filename)
 
+(** 指定したファイルの指定行を string option で返す *)
 let get_line filename lineno =
   try
     Stdio.In_channel.with_file filename ~f:(fun in_channel ->
@@ -122,22 +127,25 @@ let get_line filename lineno =
   with
   | _ -> None
 
+(** ?string_arg は string option
+    parse_fun は Menhir が生成したパーサー関数
+    lexbuf は Lexer.lexbuf *)
 let parse ?string_arg parse_fun lexbuf =
   let open MenhirLib.General in
   let module I = Parser.MenhirInterpreter in
-  let handle_result result = Ok result in
-  let env = Lexer.Env.create () in
-  let input = I.lexer_lexbuf_to_supplier (Lexer.read env) lexbuf in
-  let handle_error error_state =
-    let env' =
+  let env = Lexer.Env.create () in (* Lexer の状態 *)
+  let handle_result result = Ok result in                            (* succeed | 'a -> 'answer *)
+  let input = I.lexer_lexbuf_to_supplier (Lexer.read env) lexbuf in  (* supplier を生成する*)
+  let handle_error error_state =                                     (* fail | 'a checkpoint -> 'answer *)
+    let env' = (* パーサーの状態を取得 *)
       match error_state with
       | I.HandlingError env -> env
       | _ -> assert false
     in
-    match I.stack env' |> Lazy.force with
+    match I.stack env' |> Lazy.force with (* パーサーのスタック状態を取得する | I.stack は deprecated *)
     | Nil -> assert false
     | Cons (I.Element (_state, _, start_pos, end_pos), _) ->
-      let message =
+      let message = (* エラーメッセージ? *)
         Option.value_map env.Lexer.Env.last_token ~f:token_to_string ~default:"unknown"
       in
       let line_pos, col_pos =
@@ -152,7 +160,7 @@ let parse ?string_arg parse_fun lexbuf =
           ( Printf.sprintf "%d-%d" start_pos.pos_lnum end_pos.pos_lnum
           , Int.to_string start_pos.pos_lnum )
       in
-      let message =
+      let message = (* エラーメッセージ *)
         Printf.sprintf
           "%s:%s:%s: ParseError when processing %s"
           start_pos.pos_fname
@@ -160,7 +168,7 @@ let parse ?string_arg parse_fun lexbuf =
           col_pos
           message
       in
-      let context =
+      let context = (* エラーが発生した箇所の行テキスト *)
         match string_arg with
         | None -> get_line start_pos.pos_fname end_pos.pos_lnum
         | Some string_arg ->
@@ -168,6 +176,7 @@ let parse ?string_arg parse_fun lexbuf =
       in
       Error { Error.message; context }
   in
+  (* ここでパース処理が走っているようだ *)
   try I.loop_handle handle_result handle_error input (parse_fun lexbuf.lex_curr_p) with
   | Lexer.SyntaxError msg ->
     let pos = lexbuf.lex_curr_p in

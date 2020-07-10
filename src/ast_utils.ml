@@ -1,6 +1,8 @@
 open! Base
 open! Import
 
+(* stmt(文) を受け取り中身の body を再帰的に調べ変数定義があったら Hash_set に保存していく
+   これによりスコープの外側にある変数名を保存していきインデントでネストしても変数宣言を引き継ぐ *)
 (* Local variables are variables that are assigned in the body. *)
 let local_variables body =
   let local_variables = Hash_set.create (module String) in
